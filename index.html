@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Mapa de Carteiras - Cuidados em Casa</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<style>
+  :root {
+    --bg: #f4f3ef;
+    --panel: #ffffff;
+    --border: #e0ddd4;
+    --text: #1f1e1c;
+    --text-muted: #6b6862;
+    --accent: #1a3a2f;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    background: var(--accent); color: #fff;
+    padding: 12px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+    z-index: 1000;
+  }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  header .meta { font-size: 12px; opacity: 0.85; }
+  #menuBtn {
+    display: none;
+    background: rgba(255,255,255,0.15); border: none; color: #fff;
+    padding: 6px 10px; border-radius: 6px; font-size: 14px; cursor: pointer;
+  }
+
+  #main { flex: 1; display: flex; min-height: 0; }
+
+  #sidebar {
+    width: 280px; flex-shrink: 0;
+    background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow-y: auto;
+  }
+  #sidebar .section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  #sidebar .section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 0 0 10px 0; }
+
+  #search {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 14px; background: var(--bg);
+  }
+
+  .quickbtns { display: flex; gap: 6px; margin-bottom: 10px; }
+  .quickbtns button {
+    flex: 1; padding: 6px 8px; font-size: 12px; border: 1px solid var(--border);
+    background: var(--bg); border-radius: 6px; cursor: pointer; color: var(--text);
+  }
+  .quickbtns button:hover { background: #e9e7de; }
+
+  .nurse-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 4px;
+    cursor: pointer; user-select: none; border-radius: 6px; font-size: 13px;
+  }
+  .nurse-row:hover { background: var(--bg); }
+  .nurse-row input { accent-color: var(--accent); cursor: pointer; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .nurse-name { flex: 1; }
+  .nurse-count { color: var(--text-muted); font-size: 12px; }
+
+  #summary { font-size: 12px; color: var(--text-muted); padding: 10px 16px; border-top: 1px solid var(--border); margin-top: auto; }
+
+  #mapContainer { flex: 1; position: relative; }
+  #map { width: 100%; height: 100%; }
+
+  .leaflet-popup-content { font-size: 13px; line-height: 1.5; }
+  .leaflet-popup-content b { color: var(--accent); }
+
+  /* Mobile */
+  @media (max-width: 768px) {
+    #menuBtn { display: inline-block; }
+    #sidebar {
+      position: fixed; top: 49px; left: 0; bottom: 0; width: 82vw; max-width: 300px;
+      z-index: 999; transform: translateX(-100%);
+      transition: transform 0.2s ease-out;
+      box-shadow: 2px 0 12px rgba(0,0,0,0.2);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #overlay {
+      display: none; position: fixed; top: 49px; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.35); z-index: 998;
+    }
+    #overlay.open { display: block; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div>
+      <h1>Carteiras - Cuidados em Casa</h1>
+      <div class="meta">Dados desidentificados (iniciais) - uso interno</div>
+    </div>
+    <button id="menuBtn" onclick="toggleSidebar()">Filtros</button>
+  </header>
+
+  <div id="main">
+    <div id="overlay" onclick="toggleSidebar()"></div>
+    <div id="sidebar">
+      <div class="section">
+        <h2>Buscar paciente</h2>
+        <input id="search" type="text" placeholder="Digite nome ou iniciais...">
+      </div>
+      <div class="section">
+        <h2>Profissionais</h2>
+        <div class="quickbtns">
+          <button onclick="toggleAll(true)">Marcar todos</button>
+          <button onclick="toggleAll(false)">Desmarcar todos</button>
+        </div>
+        <div id="nurseList"></div>
+      </div>
+      <div id="summary"></div>
+    </div>
+
+    <div id="mapContainer">
+      <div id="map"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="data.js"></script>
+<script>
+const nurses = Object.keys(NURSE_COLORS).sort();
+const active = new Set(nurses);
+let searchTerm = '';
+
+const map = L.map('map', { zoomControl: true }).setView([-23.31, -51.19], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+function makeDivIcon(color) {
+  return L.divIcon({
+    className: '',
+    html: '<div style="width:12px;height:12px;border-radius:50%;background:' + color + ';border:2px solid #fff;box-shadow:0 0 2px rgba(0,0,0,0.4);"></div>',
+    iconSize: [12, 12],
+    iconAnchor: [6, 6]
+  });
+}
+
+let clusterGroup = L.markerClusterGroup({
+  maxClusterRadius: 45,
+  spiderfyOnMaxZoom: true,
+  disableClusteringAtZoom: 16
+});
+map.addLayer(clusterGroup);
+
+function buildMarkers() {
+  clusterGroup.clearLayers();
+  const term = searchTerm.trim().toLowerCase();
+  let shown = 0;
+  const markers = [];
+  for (const pt of PATIENTS) {
+    if (!active.has(pt.n)) continue;
+    if (term && !pt.p.toLowerCase().includes(term)) continue;
+    const marker = L.marker([pt.y, pt.x], { icon: makeDivIcon(NURSE_COLORS[pt.n]) });
+    marker.bindPopup('<b>' + pt.p + '</b><br>Profissional: ' + pt.n);
+    markers.push(marker);
+    shown++;
+  }
+  clusterGroup.addLayers(markers);
+  document.getElementById('summary').textContent = shown + ' pacientes exibidos de ' + PATIENTS.length + ' no total';
+}
+
+function buildNurseList() {
+  const container = document.getElementById('nurseList');
+  container.innerHTML = '';
+  nurses.forEach(n => {
+    const count = PATIENTS.filter(p => p.n === n).length;
+    const row = document.createElement('label');
+    row.className = 'nurse-row';
+    row.innerHTML =
+      '<input type="checkbox" checked data-nurse="' + n + '">' +
+      '<span class="dot" style="background:' + NURSE_COLORS[n] + ';"></span>' +
+      '<span class="nurse-name">' + n + '</span>' +
+      '<span class="nurse-count">' + count + '</span>';
+    container.appendChild(row);
+  });
+  container.addEventListener('change', (e) => {
+    const n = e.target.getAttribute('data-nurse');
+    if (!n) return;
+    if (e.target.checked) active.add(n); else active.delete(n);
+    buildMarkers();
+  });
+}
+
+function toggleAll(state) {
+  active.clear();
+  if (state) nurses.forEach(n => active.add(n));
+  document.querySelectorAll('#nurseList input[type=checkbox]').forEach(cb => cb.checked = state);
+  buildMarkers();
+}
+
+document.getElementById('search').addEventListener('input', (e) => {
+  searchTerm = e.target.value;
+  buildMarkers();
+});
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('open');
+}
+
+buildNurseList();
+buildMarkers();
+</script>
+</body>
+</html>
