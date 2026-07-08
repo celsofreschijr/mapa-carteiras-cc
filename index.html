@@ -194,6 +194,72 @@ let clusterGroup = L.markerClusterGroup({
 });
 map.addLayer(clusterGroup);
 
+function buildPopupHtml(pt) {
+  const options = Object.keys(NURSE_HOMES).sort()
+    .filter(n => n !== pt.n)
+    .map(n => '<option value="' + n + '">' + n + '</option>')
+    .join('');
+  return '<div style="min-width:190px;">' +
+    '<b>' + pt.p + '</b><br>' +
+    'Profissional atual: ' + pt.n + '<br>' +
+    '<select id="moveSel_' + pt.id + '" style="width:100%; margin-top:6px; padding:4px; font-size:12px;">' +
+    '<option value="">Mudar para...</option>' + options + '</select>' +
+    '<button id="moveBtn_' + pt.id + '" style="width:100%; margin-top:6px; padding:5px; font-size:12px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:6px; cursor:pointer;">Confirmar mudança</button>' +
+    '<button id="delBtn_' + pt.id + '" style="width:100%; margin-top:6px; padding:5px; font-size:12px; border:1px solid #c0392b; background:#fff; color:#c0392b; border-radius:6px; cursor:pointer;">Excluir paciente</button>' +
+    '</div>';
+}
+
+function attachPopupEvents(pt) {
+  const moveBtn = document.getElementById('moveBtn_' + pt.id);
+  const delBtn = document.getElementById('delBtn_' + pt.id);
+  if (moveBtn) {
+    moveBtn.onclick = () => {
+      const sel = document.getElementById('moveSel_' + pt.id);
+      const newNurse = sel.value;
+      if (!newNurse) { alert('Selecione uma enfermeira antes de confirmar.'); return; }
+      movePatientAction(pt, newNurse);
+    };
+  }
+  if (delBtn) {
+    delBtn.onclick = () => deletePatientAction(pt);
+  }
+}
+
+async function movePatientAction(pt, newNurse) {
+  if (!confirm('Mudar ' + pt.p + ' de ' + pt.n + ' para ' + newNurse + '?')) return;
+  try {
+    if (pt.source === 'added') {
+      await db.collection('patients_added').doc(pt.id).update({ n: newNurse });
+    } else {
+      await db.collection('static_overrides').doc(pt.id).set({ action: 'move', newNurse }, { merge: true });
+    }
+    pt.n = newNurse;
+    map.closePopup();
+    buildNurseList();
+    buildMarkers();
+  } catch (err) {
+    alert('Erro ao salvar a mudança. Verifique a configuração do Firebase.');
+  }
+}
+
+async function deletePatientAction(pt) {
+  if (!confirm('Excluir ' + pt.p + ' (carteira de ' + pt.n + ')? Essa ação não pode ser desfeita.')) return;
+  try {
+    if (pt.source === 'added') {
+      await db.collection('patients_added').doc(pt.id).delete();
+    } else {
+      await db.collection('static_overrides').doc(pt.id).set({ action: 'delete' }, { merge: true });
+    }
+    const idx = PATIENTS.findIndex(p => p.id === pt.id);
+    if (idx !== -1) PATIENTS.splice(idx, 1);
+    map.closePopup();
+    buildNurseList();
+    buildMarkers();
+  } catch (err) {
+    alert('Erro ao excluir. Verifique a configuração do Firebase.');
+  }
+}
+
 function buildMarkers() {
   clusterGroup.clearLayers();
   const term = searchTerm.trim().toLowerCase();
@@ -203,7 +269,8 @@ function buildMarkers() {
     if (!active.has(pt.n)) continue;
     if (term && !pt.p.toLowerCase().includes(term)) continue;
     const marker = L.marker([pt.y, pt.x], { icon: makeDivIcon(NURSE_COLORS[pt.n]) });
-    marker.bindPopup('<b>' + pt.p + '</b><br>Profissional: ' + pt.n);
+    marker.bindPopup(buildPopupHtml(pt));
+    marker.on('popupopen', () => attachPopupEvents(pt));
     markers.push(marker);
     shown++;
   }
@@ -393,8 +460,8 @@ async function addToCarteira(nurse, btnEl) {
   };
 
   try {
-    await db.collection('patients_added').add(record);
-    PATIENTS.push({ n: nurse, p: record.p, x: record.x, y: record.y });
+    const docRef = await db.collection('patients_added').add(record);
+    PATIENTS.push({ n: nurse, p: record.p, x: record.x, y: record.y, id: docRef.id, source: 'added' });
     buildNurseList();
     buildMarkers();
     btnEl.textContent = 'Adicionado ✓';
@@ -409,12 +476,38 @@ async function addToCarteira(nurse, btnEl) {
 }
 
 async function loadAddedPatients() {
+  // Marca os pacientes estáticos (vindos do data.js) com sua origem
+  PATIENTS.forEach(p => { p.source = 'static'; });
+
   try {
     const snap = await db.collection('patients_added').get();
     snap.forEach(doc => {
       const d = doc.data();
-      PATIENTS.push({ n: d.n, p: d.p, x: d.x, y: d.y });
+      PATIENTS.push({ n: d.n, p: d.p, x: d.x, y: d.y, id: doc.id, source: 'added' });
     });
+  } catch (err) {
+    console.warn('Não foi possível carregar pacientes adicionados (Firebase ainda não configurado?)', err);
+    return;
+  }
+
+  try {
+    const overridesSnap = await db.collection('static_overrides').get();
+    const toDelete = new Set();
+    overridesSnap.forEach(doc => {
+      const d = doc.data();
+      const target = PATIENTS.find(p => p.id === doc.id && p.source === 'static');
+      if (!target) return;
+      if (d.action === 'delete') {
+        toDelete.add(doc.id);
+      } else if (d.action === 'move' && d.newNurse) {
+        target.n = d.newNurse;
+      }
+    });
+    if (toDelete.size > 0) {
+      for (let i = PATIENTS.length - 1; i >= 0; i--) {
+        if (toDelete.has(PATIENTS[i].id)) PATIENTS.splice(i, 1);
+      }
+    }
   } catch (err) {
     console.warn('Não foi possível carregar pacientes adicionados (Firebase ainda não configurado?)', err);
   }
