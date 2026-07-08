@@ -202,15 +202,57 @@ let clusterGroup = L.markerClusterGroup({
 });
 map.addLayer(clusterGroup);
 
+function evaluatePatientFit(pt) {
+  const counts = currentCounts();
+  const results = Object.keys(NURSE_HOMES).map(n => {
+    const others = PATIENTS.filter(p => p.n === n && p.id !== pt.id);
+    let avgDist;
+    if (others.length > 0) {
+      const total = others.reduce((sum, p) => sum + haversineKm(p.y, p.x, pt.y, pt.x), 0);
+      avgDist = total / others.length;
+    } else {
+      const [hlat, hlon] = NURSE_HOMES[n];
+      avgDist = haversineKm(hlat, hlon, pt.y, pt.x);
+    }
+    const count = counts[n] || 0;
+    return { nurse: n, avgDist, count, vagas: NURSE_CAPACITY - count };
+  });
+
+  const current = results.find(r => r.nurse === pt.n);
+  const alternatives = results
+    .filter(r => r.nurse !== pt.n && r.vagas > 0)
+    .sort((a, b) => a.avgDist - b.avgDist);
+
+  const best = alternatives[0];
+  const isUnfavorable = best && current && best.avgDist < current.avgDist * 0.75 && (current.avgDist - best.avgDist) > 0.5;
+
+  return { current, best, secondBest: alternatives[1], isUnfavorable };
+}
+
 function buildPopupHtml(pt) {
   const options = Object.keys(NURSE_HOMES).sort()
     .filter(n => n !== pt.n)
     .map(n => '<option value="' + n + '">' + n + '</option>')
     .join('');
-  return '<div style="min-width:190px;">' +
+
+  const fit = evaluatePatientFit(pt);
+  let suggestionHtml = '';
+  if (fit.isUnfavorable) {
+    suggestionHtml =
+      '<div style="margin-top:8px; padding:8px; border:1px solid #e67e22; background:#fff8ef; border-radius:6px; font-size:12px;">' +
+      '<b style="color:#c0631a;">⚠ Carteira desfavorável</b><br>' +
+      'Distância média atual (' + pt.n + '): ' + fit.current.avgDist.toFixed(1) + ' km<br>' +
+      'Melhor opção: <b>' + fit.best.nurse + '</b> (' + fit.best.avgDist.toFixed(1) + ' km, ' + fit.best.count + '/' + NURSE_CAPACITY + ')<br>' +
+      '<button id="quickMoveBtn_' + pt.id + '" style="width:100%; margin-top:6px; padding:5px; font-size:12px; border:none; background:#e67e22; color:#fff; border-radius:6px; cursor:pointer;">' +
+      'Mover para ' + fit.best.nurse + '</button>' +
+      '</div>';
+  }
+
+  return '<div style="min-width:200px;">' +
     '<b>' + pt.p + '</b><br>' +
     'Profissional atual: ' + pt.n + '<br>' +
-    '<select id="moveSel_' + pt.id + '" style="width:100%; margin-top:6px; padding:4px; font-size:12px;">' +
+    suggestionHtml +
+    '<select id="moveSel_' + pt.id + '" style="width:100%; margin-top:8px; padding:4px; font-size:12px;">' +
     '<option value="">Mudar para...</option>' + options + '</select>' +
     '<button id="moveBtn_' + pt.id + '" style="width:100%; margin-top:6px; padding:5px; font-size:12px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:6px; cursor:pointer;">Confirmar mudança</button>' +
     '<button id="delBtn_' + pt.id + '" style="width:100%; margin-top:6px; padding:5px; font-size:12px; border:1px solid #c0392b; background:#fff; color:#c0392b; border-radius:6px; cursor:pointer;">Excluir paciente</button>' +
@@ -220,6 +262,11 @@ function buildPopupHtml(pt) {
 function attachPopupEvents(pt) {
   const moveBtn = document.getElementById('moveBtn_' + pt.id);
   const delBtn = document.getElementById('delBtn_' + pt.id);
+  const quickBtn = document.getElementById('quickMoveBtn_' + pt.id);
+  if (quickBtn) {
+    const fit = evaluatePatientFit(pt);
+    quickBtn.onclick = () => movePatientAction(pt, fit.best.nurse);
+  }
   if (moveBtn) {
     moveBtn.onclick = () => {
       const sel = document.getElementById('moveSel_' + pt.id);
