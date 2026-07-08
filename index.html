@@ -131,6 +131,16 @@
     <div id="overlay" onclick="toggleSidebar()"></div>
     <div id="sidebar">
       <div class="section">
+        <h2>Novo paciente - sugestão de enfermeira</h2>
+        <input id="newName" type="text" placeholder="Nome do paciente" style="margin-bottom:6px;">
+        <input id="newAddr" type="text" placeholder="Rua e número (ex: Rua Brasil, 1718)" style="margin-bottom:6px;">
+        <input id="newBairro" type="text" placeholder="Bairro" style="margin-bottom:6px;">
+        <input id="newCidade" type="text" placeholder="Cidade" value="Londrina" style="margin-bottom:6px;">
+        <button id="suggestBtn" onclick="suggestNurse()" style="width:100%; padding:8px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">Buscar e sugerir</button>
+        <div id="suggestStatus" style="font-size:12px; color:var(--text-muted); margin-top:6px;"></div>
+        <div id="suggestResults" style="margin-top:10px;"></div>
+      </div>
+      <div class="section">
         <h2>Buscar paciente</h2>
         <input id="search" type="text" placeholder="Digite nome ou iniciais...">
       </div>
@@ -141,16 +151,6 @@
           <button onclick="toggleAll(false)">Desmarcar todos</button>
         </div>
         <div id="nurseList"></div>
-      </div>
-      <div class="section">
-        <h2>Novo paciente - sugestão de enfermeira</h2>
-        <input id="newName" type="text" placeholder="Nome do paciente" style="margin-bottom:6px;">
-        <input id="newAddr" type="text" placeholder="Rua e número (ex: Rua Brasil, 1718)" style="margin-bottom:6px;">
-        <input id="newBairro" type="text" placeholder="Bairro" style="margin-bottom:6px;">
-        <input id="newCidade" type="text" placeholder="Cidade" value="Londrina" style="margin-bottom:6px;">
-        <button id="suggestBtn" onclick="suggestNurse()" style="width:100%; padding:8px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">Buscar e sugerir</button>
-        <div id="suggestStatus" style="font-size:12px; color:var(--text-muted); margin-top:6px;"></div>
-        <div id="suggestResults" style="margin-top:10px;"></div>
       </div>
       <div id="summary"></div>
     </div>
