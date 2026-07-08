@@ -56,6 +56,24 @@
     font-size: 14px; background: var(--bg);
   }
 
+  #sidebar input[type="text"] {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 13px; background: var(--bg); display: block;
+  }
+
+  .suggestion-card {
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+    margin-bottom: 8px; background: var(--bg);
+  }
+  .suggestion-card.rank-1 { border-color: #1a3a2f; border-width: 2px; }
+  .suggestion-card .s-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .suggestion-card .s-detail { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .suggestion-card .badge {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 10px;
+    background: #e67e22; color: #fff; margin-left: 6px;
+  }
+  .suggestion-card .badge.full { background: #c0392b; }
+
   .quickbtns { display: flex; gap: 6px; margin-bottom: 10px; }
   .quickbtns button {
     flex: 1; padding: 6px 8px; font-size: 12px; border: 1px solid var(--border);
@@ -123,6 +141,15 @@
           <button onclick="toggleAll(false)">Desmarcar todos</button>
         </div>
         <div id="nurseList"></div>
+      </div>
+      <div class="section">
+        <h2>Novo paciente - sugestão de enfermeira</h2>
+        <input id="newAddr" type="text" placeholder="Rua e número (ex: Rua Brasil, 1718)" style="margin-bottom:6px;">
+        <input id="newBairro" type="text" placeholder="Bairro" style="margin-bottom:6px;">
+        <input id="newCidade" type="text" placeholder="Cidade" value="Londrina" style="margin-bottom:6px;">
+        <button id="suggestBtn" onclick="suggestNurse()" style="width:100%; padding:8px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">Buscar e sugerir</button>
+        <div id="suggestStatus" style="font-size:12px; color:var(--text-muted); margin-top:6px;"></div>
+        <div id="suggestResults" style="margin-top:10px;"></div>
       </div>
       <div id="summary"></div>
     </div>
@@ -213,6 +240,113 @@ document.getElementById('search').addEventListener('input', (e) => {
   searchTerm = e.target.value;
   buildMarkers();
 });
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function currentCounts() {
+  const counts = {};
+  Object.keys(NURSE_HOMES).forEach(n => counts[n] = 0);
+  PATIENTS.forEach(p => { if (counts[p.n] !== undefined) counts[p.n]++; });
+  return counts;
+}
+
+let previewMarker = null;
+
+async function suggestNurse() {
+  const addr = document.getElementById('newAddr').value.trim();
+  const bairro = document.getElementById('newBairro').value.trim();
+  const cidade = document.getElementById('newCidade').value.trim() || 'Londrina';
+  const statusEl = document.getElementById('suggestStatus');
+  const resultsEl = document.getElementById('suggestResults');
+  resultsEl.innerHTML = '';
+
+  if (!addr) {
+    statusEl.textContent = 'Digite ao menos a rua e o número.';
+    statusEl.style.color = '#c0392b';
+    return;
+  }
+
+  const query = [addr, bairro, cidade, 'Parana', 'Brasil'].filter(Boolean).join(', ');
+  statusEl.style.color = 'var(--text-muted)';
+  statusEl.textContent = 'Buscando endereço...';
+
+  try {
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(query);
+    const resp = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+    const data = await resp.json();
+
+    if (!data || data.length === 0) {
+      statusEl.textContent = 'Endereço não encontrado. Tente com mais detalhes (bairro, cidade).';
+      statusEl.style.color = '#c0392b';
+      return;
+    }
+
+    const lat = parseFloat(data[0].lat);
+    const lon = parseFloat(data[0].lon);
+    statusEl.style.color = 'var(--text-muted)';
+    statusEl.textContent = 'Endereço localizado: ' + data[0].display_name;
+
+    if (previewMarker) map.removeLayer(previewMarker);
+    previewMarker = L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="width:16px;height:16px;border-radius:50%;background:#000;border:3px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.5);"></div>',
+        iconSize: [16,16], iconAnchor: [8,8]
+      })
+    }).addTo(map).bindPopup('Novo paciente (proposto)').openPopup();
+    map.setView([lat, lon], 14);
+
+    const counts = currentCounts();
+    const ranked = Object.keys(NURSE_HOMES).map(n => {
+      const [hlat, hlon] = NURSE_HOMES[n];
+      const homeDist = haversineKm(hlat, hlon, lat, lon);
+      const nursePatients = PATIENTS.filter(p => p.n === n);
+      const count = nursePatients.length;
+      let avgDist = homeDist;
+      if (count > 0) {
+        const total = nursePatients.reduce((sum, p) => sum + haversineKm(p.y, p.x, lat, lon), 0);
+        avgDist = total / count;
+      }
+      return { nurse: n, homeDist, avgDist, count, vagas: NURSE_CAPACITY - count };
+    });
+
+    // Exclude nurses at full capacity from top ranking, but keep visible if needed
+    ranked.sort((a, b) => {
+      const aFull = a.vagas <= 0 ? 1 : 0;
+      const bFull = b.vagas <= 0 ? 1 : 0;
+      if (aFull !== bFull) return aFull - bFull;
+      return a.avgDist - b.avgDist;
+    });
+
+    const top3 = ranked.slice(0, 3);
+    resultsEl.innerHTML = '<div style="font-size:12px; font-weight:600; margin-bottom:6px;">Sugestões (ordenado por proximidade média à carteira atual, respeitando limite de 100):</div>';
+    top3.forEach((r, i) => {
+      const card = document.createElement('div');
+      card.className = 'suggestion-card' + (i === 0 ? ' rank-1' : '');
+      const badge = r.vagas <= 0
+        ? '<span class="badge full">CARTEIRA CHEIA</span>'
+        : (r.vagas <= 10 ? '<span class="badge">' + r.vagas + ' vagas</span>' : '');
+      card.innerHTML =
+        '<div class="s-title"><span class="dot" style="background:' + NURSE_COLORS[r.nurse] + ';"></span>' +
+        (i + 1) + 'º - ' + r.nurse + badge + '</div>' +
+        '<div class="s-detail">Distância média até os pacientes dela: ' + r.avgDist.toFixed(1) + ' km</div>' +
+        '<div class="s-detail">Distância até o ponto de partida dela: ' + r.homeDist.toFixed(1) + ' km</div>' +
+        '<div class="s-detail">Carteira atual: ' + r.count + ' / ' + NURSE_CAPACITY + ' pacientes</div>';
+      resultsEl.appendChild(card);
+    });
+
+  } catch (err) {
+    statusEl.textContent = 'Erro ao buscar endereço. Tente novamente em alguns segundos.';
+    statusEl.style.color = '#c0392b';
+  }
+}
 
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
