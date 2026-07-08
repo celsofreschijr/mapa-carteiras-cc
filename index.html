@@ -144,6 +144,7 @@
       </div>
       <div class="section">
         <h2>Novo paciente - sugestão de enfermeira</h2>
+        <input id="newName" type="text" placeholder="Nome do paciente" style="margin-bottom:6px;">
         <input id="newAddr" type="text" placeholder="Rua e número (ex: Rua Brasil, 1718)" style="margin-bottom:6px;">
         <input id="newBairro" type="text" placeholder="Bairro" style="margin-bottom:6px;">
         <input id="newCidade" type="text" placeholder="Cidade" value="Londrina" style="margin-bottom:6px;">
@@ -162,6 +163,9 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
 <script src="data.js"></script>
 <script>
 const nurses = Object.keys(NURSE_COLORS).sort();
@@ -258,8 +262,10 @@ function currentCounts() {
 }
 
 let previewMarker = null;
+let lastSearch = null;
 
 async function suggestNurse() {
+  const name = document.getElementById('newName').value.trim();
   const addr = document.getElementById('newAddr').value.trim();
   const bairro = document.getElementById('newBairro').value.trim();
   const cidade = document.getElementById('newCidade').value.trim() || 'Londrina';
@@ -267,6 +273,11 @@ async function suggestNurse() {
   const resultsEl = document.getElementById('suggestResults');
   resultsEl.innerHTML = '';
 
+  if (!name) {
+    statusEl.textContent = 'Digite o nome do paciente.';
+    statusEl.style.color = '#c0392b';
+    return;
+  }
   if (!addr) {
     statusEl.textContent = 'Digite ao menos a rua e o número.';
     statusEl.style.color = '#c0392b';
@@ -290,6 +301,7 @@ async function suggestNurse() {
 
     const lat = parseFloat(data[0].lat);
     const lon = parseFloat(data[0].lon);
+    lastSearch = { name, addr, bairro, cidade, lat, lon };
     statusEl.style.color = 'var(--text-muted)';
     statusEl.textContent = 'Endereço localizado: ' + data[0].display_name;
 
@@ -339,6 +351,13 @@ async function suggestNurse() {
         '<div class="s-detail">Distância média até os pacientes dela: ' + r.avgDist.toFixed(1) + ' km</div>' +
         '<div class="s-detail">Distância até o ponto de partida dela: ' + r.homeDist.toFixed(1) + ' km</div>' +
         '<div class="s-detail">Carteira atual: ' + r.count + ' / ' + NURSE_CAPACITY + ' pacientes</div>';
+      if (r.vagas > 0) {
+        const btn = document.createElement('button');
+        btn.textContent = 'Adicionar à carteira de ' + r.nurse;
+        btn.style.cssText = 'width:100%; margin-top:8px; padding:6px; font-size:12px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:6px; cursor:pointer;';
+        btn.onclick = () => addToCarteira(r.nurse, btn);
+        card.appendChild(btn);
+      }
       resultsEl.appendChild(card);
     });
 
@@ -348,13 +367,70 @@ async function suggestNurse() {
   }
 }
 
+function initials(name) {
+  const words = name.trim().split(/\s+/);
+  if (words.length === 1) return words[0][0] + '.';
+  return words[0] + ' ' + words[words.length - 1][0] + '.';
+}
+
+async function addToCarteira(nurse, btnEl) {
+  if (!lastSearch) return;
+  const confirmMsg = 'Confirmar adição de "' + lastSearch.name + '" à carteira de ' + nurse + '?';
+  if (!confirm(confirmMsg)) return;
+
+  btnEl.disabled = true;
+  btnEl.textContent = 'Salvando...';
+
+  const record = {
+    n: nurse,
+    p: initials(lastSearch.name),
+    x: lastSearch.lon,
+    y: lastSearch.lat,
+    addr: lastSearch.addr,
+    bairro: lastSearch.bairro,
+    cidade: lastSearch.cidade,
+    ts: firebase.firestore.FieldValue.serverTimestamp()
+  };
+
+  try {
+    await db.collection('patients_added').add(record);
+    PATIENTS.push({ n: nurse, p: record.p, x: record.x, y: record.y });
+    buildNurseList();
+    buildMarkers();
+    btnEl.textContent = 'Adicionado ✓';
+    document.getElementById('suggestStatus').textContent = 'Paciente registrado na carteira de ' + nurse + '.';
+    document.getElementById('suggestStatus').style.color = '#1a7a3d';
+  } catch (err) {
+    btnEl.disabled = false;
+    btnEl.textContent = 'Adicionar à carteira de ' + nurse;
+    document.getElementById('suggestStatus').textContent = 'Erro ao salvar. Verifique a configuração do Firebase.';
+    document.getElementById('suggestStatus').style.color = '#c0392b';
+  }
+}
+
+async function loadAddedPatients() {
+  try {
+    const snap = await db.collection('patients_added').get();
+    snap.forEach(doc => {
+      const d = doc.data();
+      PATIENTS.push({ n: d.n, p: d.p, x: d.x, y: d.y });
+    });
+  } catch (err) {
+    console.warn('Não foi possível carregar pacientes adicionados (Firebase ainda não configurado?)', err);
+  }
+}
+
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('open');
 }
 
-buildNurseList();
-buildMarkers();
+async function init() {
+  await loadAddedPatients();
+  buildNurseList();
+  buildMarkers();
+}
+init();
 </script>
 </body>
 </html>
