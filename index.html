@@ -322,12 +322,31 @@ async function deletePatientAction(pt) {
 
 let territoryLayer = null;
 
-function buildTerritories() {
+function getTerritoryAnchors() {
   const EXCLUDED = ['Angela'];
   const OVERRIDE_ANCHOR = { 'Giovanna': [-23.2780418, -51.2810444] }; // Giovanna atende em Cambé
+  const anchors = {};
+  Object.keys(NURSE_HOMES).filter(n => !EXCLUDED.includes(n)).forEach(n => {
+    anchors[n] = OVERRIDE_ANCHOR[n] || NURSE_HOMES[n];
+  });
+  return anchors;
+}
 
-  const nurses = Object.keys(NURSE_HOMES).filter(n => !EXCLUDED.includes(n));
-  const anchors = nurses.map(n => OVERRIDE_ANCHOR[n] || NURSE_HOMES[n]);
+function nearestPerimeterNurse(lat, lon) {
+  const anchors = getTerritoryAnchors();
+  let best = null, bestDist = Infinity;
+  Object.keys(anchors).forEach(n => {
+    const [alat, alon] = anchors[n];
+    const d = haversineKm(alat, alon, lat, lon);
+    if (d < bestDist) { bestDist = d; best = n; }
+  });
+  return best;
+}
+
+function buildTerritories() {
+  const anchorsObj = getTerritoryAnchors();
+  const nurses = Object.keys(anchorsObj);
+  const anchors = nurses.map(n => anchorsObj[n]);
 
   // pontos no formato [lon, lat] exigido pelo d3-delaunay
   const points = anchors.map(([lat, lon]) => [lon, lat]);
@@ -353,7 +372,7 @@ function buildTerritories() {
     territoryLayer.addLayer(poly);
 
     // rótulo fixo no centro da região
-    const [alat, alon] = OVERRIDE_ANCHOR[n] || NURSE_HOMES[n];
+    const [alat, alon] = anchorsObj[n];
     const labelIcon = L.divIcon({
       className: '',
       html: '<div style="font-size:11px; font-weight:700; color:' + color + '; text-shadow:0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;">' + n + '</div>',
@@ -531,6 +550,7 @@ async function suggestNurse() {
     });
 
     const top3 = ranked.slice(0, 3);
+    const perimeterOwner = nearestPerimeterNurse(lat, lon);
     resultsEl.innerHTML = '<div style="font-size:12px; font-weight:600; margin-bottom:6px;">Sugestões (ordenado por proximidade média à carteira atual, respeitando limite de 100):</div>';
     top3.forEach((r, i) => {
       const card = document.createElement('div');
@@ -538,12 +558,16 @@ async function suggestNurse() {
       const badge = r.vagas <= 0
         ? '<span class="badge full">CARTEIRA CHEIA</span>'
         : (r.vagas <= 10 ? '<span class="badge">' + r.vagas + ' vagas</span>' : '');
+      const perimeterWarning = (r.nurse !== perimeterOwner)
+        ? '<div style="margin-top:6px; padding:6px; border:1px solid #e67e22; background:#fff8ef; border-radius:5px; font-size:11px; color:#a5560f;">⚠ Fora do perímetro histórico de ' + r.nurse + ' (mais próximo do perímetro de ' + perimeterOwner + ')</div>'
+        : '';
       card.innerHTML =
         '<div class="s-title"><span class="dot" style="background:' + NURSE_COLORS[r.nurse] + ';"></span>' +
         (i + 1) + 'º - ' + r.nurse + badge + '</div>' +
         '<div class="s-detail">Distância média até os pacientes dela: ' + r.avgDist.toFixed(1) + ' km</div>' +
         '<div class="s-detail">Distância até o ponto de partida dela: ' + r.homeDist.toFixed(1) + ' km</div>' +
-        '<div class="s-detail">Carteira atual: ' + r.count + ' / ' + NURSE_CAPACITY + ' pacientes</div>';
+        '<div class="s-detail">Carteira atual: ' + r.count + ' / ' + NURSE_CAPACITY + ' pacientes</div>' +
+        perimeterWarning;
       if (r.vagas > 0) {
         const btn = document.createElement('button');
         btn.textContent = 'Adicionar à carteira de ' + r.nurse;
