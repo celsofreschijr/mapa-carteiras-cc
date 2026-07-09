@@ -150,6 +150,10 @@
           <button onclick="toggleAll(true)">Marcar todos</button>
           <button onclick="toggleAll(false)">Desmarcar todos</button>
         </div>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin:8px 0; cursor:pointer;">
+          <input type="checkbox" id="territoryToggle" checked onchange="toggleTerritories(this.checked)">
+          Mostrar perímetros de atendimento
+        </label>
         <div id="nurseList"></div>
       </div>
       <div id="summary"></div>
@@ -163,6 +167,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/d3-delaunay@6"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
@@ -315,7 +320,66 @@ async function deletePatientAction(pt) {
   }
 }
 
+let territoryLayer = null;
+
+function buildTerritories() {
+  const EXCLUDED = ['Angela'];
+  const OVERRIDE_ANCHOR = { 'Giovanna': [-23.2780418, -51.2810444] }; // Giovanna atende em Cambé
+
+  const nurses = Object.keys(NURSE_HOMES).filter(n => !EXCLUDED.includes(n));
+  const anchors = nurses.map(n => OVERRIDE_ANCHOR[n] || NURSE_HOMES[n]);
+
+  // pontos no formato [lon, lat] exigido pelo d3-delaunay
+  const points = anchors.map(([lat, lon]) => [lon, lat]);
+
+  // bounding box cobrindo Londrina, Cambé, Ibiporã e Jataizinho
+  const bbox = [-51.42, -23.42, -50.90, -23.14];
+
+  const delaunay = d3.Delaunay.from(points);
+  const voronoi = delaunay.voronoi(bbox);
+
+  territoryLayer = L.layerGroup();
+
+  nurses.forEach((n, i) => {
+    const cell = voronoi.cellPolygon(i);
+    if (!cell) return;
+    const latlngs = cell.map(([lon, lat]) => [lat, lon]);
+    const color = NURSE_COLORS[n];
+    const poly = L.polygon(latlngs, {
+      color: color, weight: 2, opacity: 0.75,
+      fillColor: color, fillOpacity: 0.10
+    });
+    poly.bindTooltip(n, { permanent: false, direction: 'center', className: 'territory-label' });
+    territoryLayer.addLayer(poly);
+
+    // rótulo fixo no centro da região
+    const [alat, alon] = OVERRIDE_ANCHOR[n] || NURSE_HOMES[n];
+    const labelIcon = L.divIcon({
+      className: '',
+      html: '<div style="font-size:11px; font-weight:700; color:' + color + '; text-shadow:0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;">' + n + '</div>',
+      iconSize: [0, 0]
+    });
+    territoryLayer.addLayer(L.marker([alat, alon], { icon: labelIcon, interactive: false }));
+
+    // marca a casa/base da enfermeira
+    const homeIcon = L.divIcon({
+      className: '',
+      html: '<div style="width:10px;height:10px;background:' + color + ';border:2px solid #fff;border-radius:2px;box-shadow:0 0 3px rgba(0,0,0,0.5);"></div>',
+      iconSize: [10, 10], iconAnchor: [5, 5]
+    });
+    territoryLayer.addLayer(L.marker([alat, alon], { icon: homeIcon, interactive: false }));
+  });
+
+  territoryLayer.addTo(map);
+}
+
+function toggleTerritories(show) {
+  if (!territoryLayer) return;
+  if (show) { territoryLayer.addTo(map); } else { map.removeLayer(territoryLayer); }
+}
+
 function buildMarkers() {
+
   clusterGroup.clearLayers();
   const term = searchTerm.trim().toLowerCase();
   let shown = 0;
@@ -584,6 +648,7 @@ async function init() {
   await loadAddedPatients();
   buildNurseList();
   buildMarkers();
+  buildTerritories();
 }
 init();
 </script>
