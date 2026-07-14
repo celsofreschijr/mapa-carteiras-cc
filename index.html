@@ -757,7 +757,10 @@ async function suggestNurse() {
         const total = nursePatients.reduce((sum, p) => sum + haversineKm(p.y, p.x, lat, lon), 0);
         avgDist = total / count;
       }
-      return { nurse: n, homeDist, avgDist, count, vagas: NURSE_CAPACITY - count };
+      // Score combinado: pondera distância média à carteira atual e distância até a casa dela,
+      // para não ignorar quem "é" da região só porque ainda tem poucos pacientes cadastrados ali.
+      const score = 0.6 * avgDist + 0.4 * homeDist;
+      return { nurse: n, homeDist, avgDist, score, count, vagas: NURSE_CAPACITY - count };
     });
 
     // Exclude nurses at full capacity from top ranking, but keep visible if needed
@@ -765,11 +768,13 @@ async function suggestNurse() {
       const aFull = a.vagas <= 0 ? 1 : 0;
       const bFull = b.vagas <= 0 ? 1 : 0;
       if (aFull !== bFull) return aFull - bFull;
-      return a.avgDist - b.avgDist;
+      return a.score - b.score;
     });
 
     const top3 = ranked.slice(0, 3);
     const perimeterOwner = nearestPerimeterNurse(lat, lon);
+    const perimeterOwnerData = ranked.find(r => r.nurse === perimeterOwner);
+    const perimeterOwnerMissing = perimeterOwnerData && perimeterOwnerData.vagas > 0 && !top3.some(r => r.nurse === perimeterOwner);
     resultsEl.innerHTML = '<div style="font-size:12px; font-weight:600; margin-bottom:6px;">Sugestões (ordenado por proximidade média à carteira atual, respeitando limite de 100):</div>';
     top3.forEach((r, i) => {
       const card = document.createElement('div');
@@ -796,6 +801,27 @@ async function suggestNurse() {
       }
       resultsEl.appendChild(card);
     });
+
+    if (perimeterOwnerMissing) {
+      const r = perimeterOwnerData;
+      const card = document.createElement('div');
+      card.className = 'suggestion-card';
+      card.style.borderColor = '#2a6fb0';
+      const badge = r.vagas <= 10 ? '<span class="badge" style="background:#2a6fb0;">' + r.vagas + ' vagas</span>' : '';
+      card.innerHTML =
+        '<div class="s-title"><span class="dot" style="background:' + NURSE_COLORS[r.nurse] + ';"></span>' +
+        'Titular do perímetro - ' + r.nurse + badge + '</div>' +
+        '<div class="s-detail" style="color:#2a6fb0;">Endereço está dentro da região historicamente atendida por ela, mesmo não estando entre as 3 mais próximas por carteira atual.</div>' +
+        '<div class="s-detail">Distância média até os pacientes dela: ' + r.avgDist.toFixed(1) + ' km</div>' +
+        '<div class="s-detail">Distância até o ponto de partida dela: ' + r.homeDist.toFixed(1) + ' km</div>' +
+        '<div class="s-detail">Carteira atual: ' + r.count + ' / ' + NURSE_CAPACITY + ' pacientes</div>';
+      const btn = document.createElement('button');
+      btn.textContent = 'Adicionar à carteira de ' + r.nurse;
+      btn.style.cssText = 'width:100%; margin-top:8px; padding:6px; font-size:12px; border:1px solid #2a6fb0; background:#fff; color:#2a6fb0; border-radius:6px; cursor:pointer;';
+      btn.onclick = () => addToCarteira(r.nurse, btn);
+      card.appendChild(btn);
+      resultsEl.appendChild(card);
+    }
 
   } catch (err) {
     statusEl.textContent = 'Erro ao buscar endereço. Tente novamente em alguns segundos.';
