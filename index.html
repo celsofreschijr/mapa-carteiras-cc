@@ -74,6 +74,16 @@
   }
   .suggestion-card .badge.full { background: #c0392b; }
 
+  #reportOutput table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  #reportOutput th, #reportOutput td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  #reportOutput th { color: var(--text-muted); font-weight: 600; font-size: 11px; }
+  .mismatch-card {
+    border: 1px solid #e67e22; background: #fff8ef; border-radius: 6px;
+    padding: 8px; margin-bottom: 6px; font-size: 12px;
+  }
+  .mismatch-card .mm-name { font-weight: 600; }
+  .mismatch-card .mm-detail { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+
   .quickbtns { display: flex; gap: 6px; margin-bottom: 10px; }
   .quickbtns button {
     flex: 1; padding: 6px 8px; font-size: 12px; border: 1px solid var(--border);
@@ -143,6 +153,20 @@
       <div class="section">
         <h2>Buscar paciente</h2>
         <input id="search" type="text" placeholder="Digite nome ou iniciais...">
+      </div>
+      <div class="section">
+        <h2>Relatórios</h2>
+        <select id="reportNurseFilter" style="margin-bottom:6px;">
+          <option value="">Todas as enfermeiras</option>
+        </select>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:8px; cursor:pointer;">
+          <input type="checkbox" id="reportOnlyMismatch">
+          Mostrar apenas pacientes com carteira incorreta
+        </label>
+        <button onclick="generateReport()" style="width:100%; padding:8px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">Gerar relatório</button>
+        <div id="reportStatus" style="font-size:11px; color:var(--text-muted); margin-top:6px;"></div>
+        <div id="reportOutput" style="margin-top:10px; font-size:12px; max-height:340px; overflow-y:auto;"></div>
+        <button id="reportCsvBtn" onclick="downloadReportCsv()" style="display:none; width:100%; margin-top:8px; padding:6px; font-size:12px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:6px; cursor:pointer;">Baixar CSV</button>
       </div>
       <div class="section">
         <h2>Profissionais</h2>
@@ -232,6 +256,122 @@ function evaluatePatientFit(pt) {
   const isUnfavorable = best && current && best.avgDist < current.avgDist * 0.75 && (current.avgDist - best.avgDist) > 0.5;
 
   return { current, best, secondBest: alternatives[1], isUnfavorable };
+}
+
+let lastReportRows = null;
+let lastReportType = null;
+
+function populateReportNurseFilter() {
+  const sel = document.getElementById('reportNurseFilter');
+  Object.keys(NURSE_HOMES).sort().forEach(n => {
+    const opt = document.createElement('option');
+    opt.value = n;
+    opt.textContent = n;
+    sel.appendChild(opt);
+  });
+}
+
+function generateReport() {
+  const nurseFilter = document.getElementById('reportNurseFilter').value;
+  const onlyMismatch = document.getElementById('reportOnlyMismatch').checked;
+  const statusEl = document.getElementById('reportStatus');
+  const outputEl = document.getElementById('reportOutput');
+  const csvBtn = document.getElementById('reportCsvBtn');
+
+  const pool = nurseFilter ? PATIENTS.filter(p => p.n === nurseFilter) : PATIENTS.slice();
+  statusEl.textContent = 'Calculando ' + pool.length + ' pacientes...';
+  outputEl.innerHTML = '';
+  csvBtn.style.display = 'none';
+
+  setTimeout(() => {
+    if (!onlyMismatch) {
+      // Contagem simples por enfermeira
+      const counts = {};
+      Object.keys(NURSE_HOMES).forEach(n => counts[n] = 0);
+      pool.forEach(p => { if (counts[p.n] !== undefined) counts[p.n]++; });
+
+      const rows = Object.keys(counts)
+        .filter(n => !nurseFilter || n === nurseFilter)
+        .sort((a, b) => counts[b] - counts[a])
+        .map(n => ({ nurse: n, count: counts[n], vagas: NURSE_CAPACITY - counts[n] }));
+
+      let html = '<table><thead><tr><th>Enfermeira</th><th>Pacientes</th><th>Vagas</th></tr></thead><tbody>';
+      rows.forEach(r => {
+        html += '<tr><td>' + r.nurse + '</td><td>' + r.count + ' / ' + NURSE_CAPACITY + '</td><td>' + r.vagas + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      outputEl.innerHTML = html;
+      statusEl.textContent = rows.reduce((s, r) => s + r.count, 0) + ' pacientes no total.';
+
+      lastReportType = 'counts';
+      lastReportRows = rows;
+      csvBtn.style.display = 'block';
+
+    } else {
+      // Pacientes com carteira incorreta
+      const mismatches = [];
+      pool.forEach(p => {
+        const fit = evaluatePatientFit(p);
+        if (fit.isUnfavorable) {
+          mismatches.push({
+            paciente: p.p,
+            atual: p.n,
+            atualDist: fit.current.avgDist,
+            sugerido: fit.best.nurse,
+            sugeridoDist: fit.best.avgDist,
+            vagasSugerido: fit.best.vagas
+          });
+        }
+      });
+
+      if (mismatches.length === 0) {
+        outputEl.innerHTML = '<div style="color:var(--text-muted);">Nenhum paciente com carteira incorreta encontrado' + (nurseFilter ? ' para ' + nurseFilter : '') + '.</div>';
+        statusEl.textContent = '';
+        csvBtn.style.display = 'none';
+      } else {
+        mismatches.sort((a, b) => (b.atualDist - b.sugeridoDist) - (a.atualDist - a.sugeridoDist));
+        let html = '';
+        mismatches.forEach(m => {
+          html += '<div class="mismatch-card">' +
+            '<div class="mm-name">' + m.paciente + '</div>' +
+            '<div class="mm-detail">Atual: <b>' + m.atual + '</b> (' + m.atualDist.toFixed(1) + ' km)</div>' +
+            '<div class="mm-detail">Sugerido: <b>' + m.sugerido + '</b> (' + m.sugeridoDist.toFixed(1) + ' km, ' + m.vagasSugerido + ' vagas)</div>' +
+            '</div>';
+        });
+        outputEl.innerHTML = html;
+        statusEl.textContent = mismatches.length + ' paciente(s) com carteira potencialmente incorreta.';
+
+        lastReportType = 'mismatch';
+        lastReportRows = mismatches;
+        csvBtn.style.display = 'block';
+      }
+    }
+  }, 10);
+}
+
+function downloadReportCsv() {
+  if (!lastReportRows) return;
+  let csv = '';
+  if (lastReportType === 'counts') {
+    csv = 'Enfermeira,Pacientes,Capacidade,Vagas\n';
+    lastReportRows.forEach(r => {
+      csv += r.nurse + ',' + r.count + ',' + NURSE_CAPACITY + ',' + r.vagas + '\n';
+    });
+  } else {
+    csv = 'Paciente,Enfermeira Atual,Distancia Atual (km),Enfermeira Sugerida,Distancia Sugerida (km),Vagas Sugerida\n';
+    lastReportRows.forEach(m => {
+      csv += '"' + m.paciente + '",' + m.atual + ',' + m.atualDist.toFixed(2) + ',' + m.sugerido + ',' + m.sugeridoDist.toFixed(2) + ',' + m.vagasSugerido + '\n';
+    });
+  }
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (lastReportType === 'counts' ? 'relatorio_pacientes_por_enfermeira' : 'relatorio_carteiras_incorretas') + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function buildPopupHtml(pt) {
@@ -710,6 +850,7 @@ async function init() {
   buildNurseList();
   buildMarkers();
   buildTerritories();
+  populateReportNurseFilter();
 }
 init();
 </script>
