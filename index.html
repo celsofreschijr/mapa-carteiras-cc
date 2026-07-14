@@ -253,9 +253,17 @@ function buildPopupHtml(pt) {
       '</div>';
   }
 
+  const coordText = pt.y.toFixed(6) + ', ' + pt.x.toFixed(6);
+
   return '<div style="min-width:200px;">' +
     '<b>' + pt.p + '</b><br>' +
     'Profissional atual: ' + pt.n + '<br>' +
+    '<div style="margin-top:6px; padding:6px; background:var(--bg); border:1px solid var(--border); border-radius:5px; font-size:11px;">' +
+    '<div style="color:var(--text-muted); margin-bottom:2px;">Latitude, Longitude</div>' +
+    '<div style="display:flex; align-items:center; gap:6px;">' +
+    '<code id="coord_' + pt.id + '" style="flex:1; font-size:12px; user-select:all;">' + coordText + '</code>' +
+    '<button id="copyBtn_' + pt.id + '" style="padding:3px 8px; font-size:11px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:4px; cursor:pointer;">Copiar</button>' +
+    '</div></div>' +
     suggestionHtml +
     '<select id="moveSel_' + pt.id + '" style="width:100%; margin-top:8px; padding:4px; font-size:12px;">' +
     '<option value="">Mudar para...</option>' + options + '</select>' +
@@ -264,10 +272,39 @@ function buildPopupHtml(pt) {
     '</div>';
 }
 
+function fallbackCopy(text, onDone) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  if (onDone) onDone();
+}
+
 function attachPopupEvents(pt) {
   const moveBtn = document.getElementById('moveBtn_' + pt.id);
   const delBtn = document.getElementById('delBtn_' + pt.id);
   const quickBtn = document.getElementById('quickMoveBtn_' + pt.id);
+  const copyBtn = document.getElementById('copyBtn_' + pt.id);
+
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      const text = pt.y.toFixed(6) + ', ' + pt.x.toFixed(6);
+      const done = () => {
+        copyBtn.textContent = 'Copiado ✓';
+        setTimeout(() => { copyBtn.textContent = 'Copiar'; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+      } else {
+        fallbackCopy(text, done);
+      }
+    };
+  }
   if (quickBtn) {
     const fit = evaluatePatientFit(pt);
     quickBtn.onclick = () => movePatientAction(pt, fit.best.nurse);
