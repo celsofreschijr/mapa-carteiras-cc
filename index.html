@@ -261,6 +261,7 @@ function evaluatePatientFit(pt) {
 let lastReportRows = null;
 let lastReportType = null;
 let lastReportSummary = null;
+let lastReportDetail = null;
 
 function populateReportNurseFilter() {
   const sel = document.getElementById('reportNurseFilter');
@@ -296,16 +297,26 @@ function generateReport() {
         .sort((a, b) => counts[b] - counts[a])
         .map(n => ({ nurse: n, count: counts[n], vagas: NURSE_CAPACITY - counts[n] }));
 
+      const detailRows = pool
+        .filter(p => counts[p.n] !== undefined)
+        .map(p => ({
+          nurse: p.n,
+          paciente: p.p,
+          endereco: (p.addr && p.addr.trim()) ? p.addr : ('(sem endereço — ' + p.y.toFixed(5) + ', ' + p.x.toFixed(5) + ')')
+        }))
+        .sort((a, b) => a.nurse.localeCompare(b.nurse) || a.paciente.localeCompare(b.paciente));
+
       let html = '<table><thead><tr><th>Enfermeira</th><th>Pacientes</th><th>Vagas</th></tr></thead><tbody>';
       rows.forEach(r => {
         html += '<tr><td>' + r.nurse + '</td><td>' + r.count + ' / ' + NURSE_CAPACITY + '</td><td>' + r.vagas + '</td></tr>';
       });
       html += '</tbody></table>';
       outputEl.innerHTML = html;
-      statusEl.textContent = rows.reduce((s, r) => s + r.count, 0) + ' pacientes no total.';
+      statusEl.textContent = rows.reduce((s, r) => s + r.count, 0) + ' pacientes no total. O CSV exportado inclui a lista de nomes por enfermeira.';
 
       lastReportType = 'counts';
       lastReportRows = rows;
+      lastReportDetail = detailRows;
       csvBtn.style.display = 'block';
 
     } else {
@@ -380,28 +391,38 @@ function generateReport() {
   }, 10);
 }
 
+function csvNum(n) {
+  return (n === null || n === undefined) ? '' : String(n).replace('.', ',');
+}
+
 function downloadReportCsv() {
   if (!lastReportRows) return;
   let csv = '';
   let filename = '';
   if (lastReportType === 'counts') {
-    csv = 'Enfermeira,Pacientes,Capacidade,Vagas\n';
+    csv = 'Enfermeira;Pacientes;Capacidade;Vagas\n';
     lastReportRows.forEach(r => {
-      csv += r.nurse + ',' + r.count + ',' + NURSE_CAPACITY + ',' + r.vagas + '\n';
+      csv += r.nurse + ';' + r.count + ';' + NURSE_CAPACITY + ';' + r.vagas + '\n';
+    });
+    csv += '\n';
+    csv += 'Lista de pacientes por enfermeira\n';
+    csv += 'Enfermeira;Paciente;Endereco\n';
+    (lastReportDetail || []).forEach(d => {
+      csv += d.nurse + ';"' + d.paciente + '";"' + d.endereco.replace(/"/g, '""') + '"\n';
     });
     filename = 'relatorio_pacientes_por_enfermeira';
   } else {
     const s = lastReportSummary || { corretos: 0, incorretos: 0, total: 0 };
     csv = 'Resumo\n';
-    csv += 'Carteira correta,' + s.corretos + '\n';
-    csv += 'Carteira incorreta,' + s.incorretos + '\n';
-    csv += 'Total analisado,' + s.total + '\n';
+    csv += 'Carteira correta;' + s.corretos + '\n';
+    csv += 'Carteira incorreta;' + s.incorretos + '\n';
+    csv += 'Total analisado;' + s.total + '\n';
     csv += '\n';
-    csv += 'Paciente,Endereco,Situacao,Enfermeira Atual,Distancia Atual (km),Enfermeira Sugerida,Distancia Sugerida (km),Vagas Sugerida\n';
+    csv += 'Paciente;Endereco;Situacao;Enfermeira Atual;Distancia Atual (km);Enfermeira Sugerida;Distancia Sugerida (km);Vagas Sugerida\n';
     lastReportRows.forEach(m => {
-      const atualDist = m.atualDist != null ? m.atualDist.toFixed(2) : '';
-      const sugeridoDist = m.sugeridoDist != null ? m.sugeridoDist.toFixed(2) : '';
-      csv += '"' + m.paciente + '","' + m.endereco.replace(/"/g, '""') + '",' + m.situacao + ',' + m.atual + ',' + atualDist + ',' + m.sugerido + ',' + sugeridoDist + ',' + m.vagasSugerido + '\n';
+      const atualDist = m.atualDist != null ? csvNum(m.atualDist.toFixed(2)) : '';
+      const sugeridoDist = m.sugeridoDist != null ? csvNum(m.sugeridoDist.toFixed(2)) : '';
+      csv += '"' + m.paciente + '";"' + m.endereco.replace(/"/g, '""') + '";' + m.situacao + ';' + m.atual + ';' + atualDist + ';' + m.sugerido + ';' + sugeridoDist + ';' + m.vagasSugerido + '\n';
     });
     filename = 'relatorio_situacao_carteiras';
   }
@@ -757,10 +778,10 @@ function downloadRedistributionCsv(originalNurse, patientsList, assignment) {
   rows.sort((a, b) => a.coveringNurse.localeCompare(b.coveringNurse) || a.paciente.localeCompare(b.paciente));
 
   let csv = 'Redistribuicao temporaria - afastamento de ' + originalNurse + '\n';
-  csv += 'Total de pacientes redistribuidos,' + rows.length + '\n\n';
-  csv += 'Enfermeira que recebeu,Paciente,Endereco,Enfermeira original (afastada)\n';
+  csv += 'Total de pacientes redistribuidos;' + rows.length + '\n\n';
+  csv += 'Enfermeira que recebeu;Paciente;Endereco;Enfermeira original (afastada)\n';
   rows.forEach(r => {
-    csv += r.coveringNurse + ',"' + r.paciente + '","' + r.endereco.replace(/"/g, '""') + '",' + originalNurse + '\n';
+    csv += r.coveringNurse + ';"' + r.paciente + '";"' + r.endereco.replace(/"/g, '""') + '";' + originalNurse + '\n';
   });
 
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
