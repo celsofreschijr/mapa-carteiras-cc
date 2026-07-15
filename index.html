@@ -249,7 +249,7 @@ function evaluatePatientFit(pt) {
 
   const current = results.find(r => r.nurse === pt.n);
   const alternatives = results
-    .filter(r => r.nurse !== pt.n && r.vagas > 0)
+    .filter(r => r.nurse !== pt.n && r.vagas > 0 && isNurseActive(r.nurse))
     .sort((a, b) => a.avgDist - b.avgDist);
 
   const best = alternatives[0];
@@ -418,7 +418,7 @@ function downloadReportCsv() {
 
 function buildPopupHtml(pt) {
   const options = Object.keys(NURSE_HOMES).sort()
-    .filter(n => n !== pt.n)
+    .filter(n => n !== pt.n && isNurseActive(n))
     .map(n => '<option value="' + n + '">' + n + '</option>')
     .join('');
 
@@ -540,12 +540,33 @@ async function deletePatientAction(pt) {
 }
 
 let territoryLayer = null;
+let NURSE_STATUS = {}; // { nome: { active: bool, reason: string } } — carregado do Firestore
+
+function isNurseActive(n) {
+  return !NURSE_STATUS[n] || NURSE_STATUS[n].active !== false;
+}
+
+function activeNurseNames() {
+  return Object.keys(NURSE_HOMES).filter(n => isNurseActive(n));
+}
+
+async function loadNurseStatus() {
+  try {
+    const snap = await db.collection('nurse_status').get();
+    snap.forEach(doc => {
+      NURSE_STATUS[doc.id] = doc.data();
+    });
+  } catch (err) {
+    console.warn('Não foi possível carregar status das enfermeiras', err);
+  }
+}
+
 
 function getTerritoryAnchors() {
   const EXCLUDED = ['Angela'];
   const OVERRIDE_ANCHOR = { 'Giovanna': [-23.2780418, -51.2810444] }; // Giovanna atende em Cambé
   const anchors = {};
-  Object.keys(NURSE_HOMES).filter(n => !EXCLUDED.includes(n)).forEach(n => {
+  Object.keys(NURSE_HOMES).filter(n => !EXCLUDED.includes(n) && isNurseActive(n)).forEach(n => {
     anchors[n] = OVERRIDE_ANCHOR[n] || NURSE_HOMES[n];
   });
   return anchors;
@@ -576,6 +597,7 @@ function buildTerritories() {
   const delaunay = d3.Delaunay.from(points);
   const voronoi = delaunay.voronoi(bbox);
 
+  if (territoryLayer) { map.removeLayer(territoryLayer); }
   territoryLayer = L.layerGroup();
 
   nurses.forEach((n, i) => {
@@ -608,7 +630,10 @@ function buildTerritories() {
     territoryLayer.addLayer(L.marker([alat, alon], { icon: homeIcon, interactive: false }));
   });
 
-  territoryLayer.addTo(map);
+  const showCheckbox = document.getElementById('territoryToggle');
+  if (!showCheckbox || showCheckbox.checked) {
+    territoryLayer.addTo(map);
+  }
 }
 
 function toggleTerritories(show) {
@@ -635,25 +660,197 @@ function buildMarkers() {
   document.getElementById('summary').textContent = shown + ' pacientes exibidos de ' + PATIENTS.length + ' no total';
 }
 
+async function deactivateNurse(n) {
+  if (!confirm('Registrar afastamento de ' + n + '? A carteira dela será redistribuída temporariamente entre as enfermeiras ativas, e volta tudo quando você reativar.')) return;
+  const reason = prompt('Motivo do afastamento (opcional — ex: Licença maternidade, Atestado):', '') || '';
+
+  const herPatients = PATIENTS.filter(p => p.n === n);
+  const activeOthers = activeNurseNames().filter(x => x !== n);
+
+  if (activeOthers.length === 0) {
+    alert('Não há nenhuma outra enfermeira ativa para redistribuir a carteira.');
+    return;
+  }
+
+  if (herPatients.length === 0) {
+    try {
+      await db.collection('nurse_status').doc(n).set({ active: false, reason, deactivatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      NURSE_STATUS[n] = { active: false, reason };
+      buildNurseList(); buildMarkers(); buildTerritories();
+      alert(n + ' marcada como afastada (ela não tinha pacientes na carteira).');
+    } catch (err) { alert('Erro ao registrar afastamento.'); }
+    return;
+  }
+
+  // capacidade restante de cada enfermeira ativa, com base no estado atual
+  const capacityLeft = {};
+  activeOthers.forEach(x => { capacityLeft[x] = NURSE_CAPACITY - PATIENTS.filter(p => p.n === x).length; });
+
+  // calcula score (mesma fórmula da sugestão) de cada paciente dela para cada enfermeira ativa
+  const pairs = [];
+  herPatients.forEach(pt => {
+    activeOthers.forEach(x => {
+      const [hlat, hlon] = NURSE_HOMES[x];
+      const homeDist = haversineKm(hlat, hlon, pt.y, pt.x);
+      const others = PATIENTS.filter(p => p.n === x);
+      let avgDist = homeDist;
+      if (others.length > 0) {
+        const total = others.reduce((sum, p) => sum + haversineKm(p.y, p.x, pt.y, pt.x), 0);
+        avgDist = total / others.length;
+      }
+      const score = 0.6 * avgDist + 0.4 * homeDist;
+      pairs.push({ pt, nurse: x, score });
+    });
+  });
+  pairs.sort((a, b) => a.score - b.score);
+
+  const assignment = {};
+  pairs.forEach(pair => {
+    if (assignment[pair.pt.id]) return;
+    if (capacityLeft[pair.nurse] <= 0) return;
+    assignment[pair.pt.id] = pair.nurse;
+    capacityLeft[pair.nurse]--;
+  });
+  // fallback (só ocorre se a capacidade total das ativas não for suficiente)
+  herPatients.forEach(pt => {
+    if (!assignment[pt.id]) {
+      const fallback = activeOthers.reduce((best, x) => (capacityLeft[x] > capacityLeft[best] ? x : best), activeOthers[0]);
+      assignment[pt.id] = fallback;
+      capacityLeft[fallback]--;
+    }
+  });
+
+  try {
+    for (const pt of herPatients) {
+      const coveringNurse = assignment[pt.id];
+      if (pt.source === 'added') {
+        await db.collection('patients_added').doc(pt.id).update({ n: coveringNurse });
+      } else {
+        await db.collection('static_overrides').doc(pt.id).set({ action: 'move', newNurse: coveringNurse }, { merge: true });
+      }
+      await db.collection('coverage_log').doc(pt.id).set({
+        originalNurse: n, coveringNurse, source: pt.source,
+        ts: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      pt.n = coveringNurse;
+    }
+    await db.collection('nurse_status').doc(n).set({ active: false, reason, deactivatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    NURSE_STATUS[n] = { active: false, reason };
+
+    buildNurseList();
+    buildMarkers();
+    buildTerritories();
+    downloadRedistributionCsv(n, herPatients, assignment);
+    alert(herPatients.length + ' paciente(s) de ' + n + ' foram redistribuídos temporariamente entre as enfermeiras ativas. Ela está marcada como afastada. A lista da redistribuição foi baixada automaticamente.');
+  } catch (err) {
+    alert('Erro ao registrar afastamento. Verifique a configuração do Firebase.');
+    console.error(err);
+  }
+}
+
+function downloadRedistributionCsv(originalNurse, patientsList, assignment) {
+  const rows = patientsList.map(pt => ({
+    coveringNurse: assignment[pt.id],
+    paciente: pt.p,
+    endereco: (pt.addr && pt.addr.trim()) ? pt.addr : ('(sem endereço — ' + pt.y.toFixed(5) + ', ' + pt.x.toFixed(5) + ')')
+  }));
+  rows.sort((a, b) => a.coveringNurse.localeCompare(b.coveringNurse) || a.paciente.localeCompare(b.paciente));
+
+  let csv = 'Redistribuicao temporaria - afastamento de ' + originalNurse + '\n';
+  csv += 'Total de pacientes redistribuidos,' + rows.length + '\n\n';
+  csv += 'Enfermeira que recebeu,Paciente,Endereco,Enfermeira original (afastada)\n';
+  rows.forEach(r => {
+    csv += r.coveringNurse + ',"' + r.paciente + '","' + r.endereco.replace(/"/g, '""') + '",' + originalNurse + '\n';
+  });
+
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const dateStr = new Date().toISOString().slice(0, 10);
+  a.download = 'redistribuicao_' + originalNurse.replace(/\s+/g, '_') + '_' + dateStr + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function reactivateNurse(n) {
+  if (!confirm('Reativar ' + n + '? Os pacientes que estavam temporariamente com outras enfermeiras vão voltar para a carteira dela.')) return;
+
+  try {
+    const snap = await db.collection('coverage_log').where('originalNurse', '==', n).get();
+    let restored = 0;
+    for (const doc of snap.docs) {
+      const d = doc.data();
+      const pid = doc.id;
+      if (d.source === 'added') {
+        await db.collection('patients_added').doc(pid).update({ n });
+      } else {
+        await db.collection('static_overrides').doc(pid).set({ action: 'move', newNurse: n }, { merge: true });
+      }
+      await db.collection('coverage_log').doc(pid).delete();
+      const localP = PATIENTS.find(p => p.id === pid);
+      if (localP) localP.n = n;
+      restored++;
+    }
+
+    await db.collection('nurse_status').doc(n).delete();
+    delete NURSE_STATUS[n];
+
+    buildNurseList();
+    buildMarkers();
+    buildTerritories();
+    alert(restored + ' paciente(s) retornaram para a carteira de ' + n + '.');
+  } catch (err) {
+    alert('Erro ao reativar. Verifique a configuração do Firebase.');
+    console.error(err);
+  }
+}
+
 function buildNurseList() {
   const container = document.getElementById('nurseList');
   container.innerHTML = '';
   nurses.forEach(n => {
     const count = PATIENTS.filter(p => p.n === n).length;
+    const activeNurse = isNurseActive(n);
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'border-bottom:1px solid var(--border); padding:6px 4px;';
+
     const row = document.createElement('label');
     row.className = 'nurse-row';
+    row.style.padding = '2px 0';
     row.innerHTML =
       '<input type="checkbox" checked data-nurse="' + n + '">' +
-      '<span class="dot" style="background:' + NURSE_COLORS[n] + ';"></span>' +
-      '<span class="nurse-name">' + n + '</span>' +
+      '<span class="dot" style="background:' + NURSE_COLORS[n] + '; opacity:' + (activeNurse ? '1' : '0.35') + ';"></span>' +
+      '<span class="nurse-name" style="' + (activeNurse ? '' : 'text-decoration:line-through; color:var(--text-muted);') + '">' + n + '</span>' +
       '<span class="nurse-count">' + count + '</span>';
-    container.appendChild(row);
+    wrap.appendChild(row);
+
+    const statusRow = document.createElement('div');
+    statusRow.style.cssText = 'display:flex; align-items:center; gap:6px; margin-top:3px; padding-left:24px;';
+    if (activeNurse) {
+      statusRow.innerHTML = '<button data-deactivate="' + n + '" style="font-size:10px; padding:2px 8px; border:1px solid #c0631a; background:#fff; color:#c0631a; border-radius:10px; cursor:pointer;">Registrar afastamento</button>';
+    } else {
+      const reason = NURSE_STATUS[n] && NURSE_STATUS[n].reason ? ' — ' + NURSE_STATUS[n].reason : '';
+      statusRow.innerHTML =
+        '<span style="font-size:10px; padding:2px 8px; background:#fdeee0; color:#c0631a; border-radius:10px;">AFASTADA' + reason + '</span>' +
+        '<button data-reactivate="' + n + '" style="font-size:10px; padding:2px 8px; border:1px solid #1a7a3d; background:#fff; color:#1a7a3d; border-radius:10px; cursor:pointer;">Reativar</button>';
+    }
+    wrap.appendChild(statusRow);
+    container.appendChild(wrap);
   });
   container.addEventListener('change', (e) => {
     const n = e.target.getAttribute('data-nurse');
     if (!n) return;
     if (e.target.checked) active.add(n); else active.delete(n);
     buildMarkers();
+  });
+  container.querySelectorAll('[data-deactivate]').forEach(btn => {
+    btn.onclick = () => deactivateNurse(btn.getAttribute('data-deactivate'));
+  });
+  container.querySelectorAll('[data-reactivate]').forEach(btn => {
+    btn.onclick = () => reactivateNurse(btn.getAttribute('data-reactivate'));
   });
 }
 
@@ -747,7 +944,7 @@ async function suggestNurse() {
     map.setView([lat, lon], 14);
 
     const counts = currentCounts();
-    const ranked = Object.keys(NURSE_HOMES).map(n => {
+    const ranked = Object.keys(NURSE_HOMES).filter(n => isNurseActive(n)).map(n => {
       const [hlat, hlon] = NURSE_HOMES[n];
       const homeDist = haversineKm(hlat, hlon, lat, lon);
       const nursePatients = PATIENTS.filter(p => p.n === n);
@@ -914,6 +1111,7 @@ function toggleSidebar() {
 }
 
 async function init() {
+  await loadNurseStatus();
   await loadAddedPatients();
   buildNurseList();
   buildMarkers();
