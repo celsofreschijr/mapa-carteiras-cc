@@ -457,6 +457,19 @@ function buildPopupHtml(pt) {
   }
 
   const coordText = pt.y.toFixed(6) + ', ' + pt.x.toFixed(6);
+  const currentAddrText = pt.addr && pt.addr.trim() ? pt.addr : '(sem endereço cadastrado)';
+
+  const editAddrHtml =
+    '<details style="margin-top:6px; font-size:11px;">' +
+    '<summary style="cursor:pointer; color:var(--accent); font-weight:600;">Editar endereço</summary>' +
+    '<div style="margin-top:6px; padding:6px; background:var(--bg); border:1px solid var(--border); border-radius:5px;">' +
+    '<div style="color:var(--text-muted); margin-bottom:4px;">Atual: ' + currentAddrText + '</div>' +
+    '<input id="editAddr_' + pt.id + '" type="text" placeholder="Rua e número" style="width:100%; margin-bottom:4px; padding:4px; font-size:12px; border:1px solid var(--border); border-radius:4px;">' +
+    '<input id="editBairro_' + pt.id + '" type="text" placeholder="Bairro" style="width:100%; margin-bottom:4px; padding:4px; font-size:12px; border:1px solid var(--border); border-radius:4px;">' +
+    '<input id="editCidade_' + pt.id + '" type="text" placeholder="Cidade" value="Londrina" style="width:100%; margin-bottom:4px; padding:4px; font-size:12px; border:1px solid var(--border); border-radius:4px;">' +
+    '<button id="editAddrBtn_' + pt.id + '" style="width:100%; padding:5px; font-size:12px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:6px; cursor:pointer;">Buscar e salvar novo endereço</button>' +
+    '<div id="editAddrStatus_' + pt.id + '" style="font-size:11px; margin-top:4px;"></div>' +
+    '</div></details>';
 
   return '<div style="min-width:200px;">' +
     '<b>' + pt.p + '</b><br>' +
@@ -467,6 +480,7 @@ function buildPopupHtml(pt) {
     '<code id="coord_' + pt.id + '" style="flex:1; font-size:12px; user-select:all;">' + coordText + '</code>' +
     '<button id="copyBtn_' + pt.id + '" style="padding:3px 8px; font-size:11px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:4px; cursor:pointer;">Copiar</button>' +
     '</div></div>' +
+    editAddrHtml +
     suggestionHtml +
     '<select id="moveSel_' + pt.id + '" style="width:100%; margin-top:8px; padding:4px; font-size:12px;">' +
     '<option value="">Mudar para...</option>' + options + '</select>' +
@@ -493,6 +507,11 @@ function attachPopupEvents(pt) {
   const delBtn = document.getElementById('delBtn_' + pt.id);
   const quickBtn = document.getElementById('quickMoveBtn_' + pt.id);
   const copyBtn = document.getElementById('copyBtn_' + pt.id);
+  const editAddrBtn = document.getElementById('editAddrBtn_' + pt.id);
+
+  if (editAddrBtn) {
+    editAddrBtn.onclick = () => editAddressAction(pt);
+  }
 
   if (copyBtn) {
     copyBtn.onclick = () => {
@@ -525,6 +544,74 @@ function attachPopupEvents(pt) {
   }
 }
 
+async function editAddressAction(pt) {
+  const addr = document.getElementById('editAddr_' + pt.id).value.trim();
+  const bairro = document.getElementById('editBairro_' + pt.id).value.trim();
+  const cidade = document.getElementById('editCidade_' + pt.id).value.trim() || 'Londrina';
+  const statusEl = document.getElementById('editAddrStatus_' + pt.id);
+  const btn = document.getElementById('editAddrBtn_' + pt.id);
+
+  if (!addr) {
+    statusEl.textContent = 'Digite ao menos a rua e o número.';
+    statusEl.style.color = '#c0392b';
+    return;
+  }
+
+  statusEl.style.color = 'var(--text-muted)';
+  statusEl.textContent = 'Buscando endereço...';
+  btn.disabled = true;
+
+  try {
+    const query = [addr, bairro, cidade, 'Parana', 'Brasil'].filter(Boolean).join(', ');
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(query);
+    const resp = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+    const data = await resp.json();
+
+    if (!data || data.length === 0) {
+      statusEl.textContent = 'Endereço não encontrado. Tente com mais detalhes.';
+      statusEl.style.color = '#c0392b';
+      btn.disabled = false;
+      return;
+    }
+
+    const lat = parseFloat(data[0].lat);
+    const lon = parseFloat(data[0].lon);
+
+    if (!isWithinUrbanZone(lat, lon)) {
+      statusEl.innerHTML = '⚠ Fora do perímetro urbano atendido. Endereço encontrado: ' + data[0].display_name;
+      statusEl.style.color = '#c0392b';
+      btn.disabled = false;
+      return;
+    }
+
+    if (!confirm('Atualizar endereço de ' + pt.p + ' para:\n' + data[0].display_name + '?')) {
+      btn.disabled = false;
+      statusEl.textContent = '';
+      return;
+    }
+
+    const formattedAddr = [addr, bairro, cidade].filter(Boolean).join(' - ');
+
+    if (pt.source === 'added') {
+      await db.collection('patients_added').doc(pt.id).update({ x: lon, y: lat, addr: addr, bairro: bairro, cidade: cidade });
+    } else {
+      await db.collection('static_overrides').doc(pt.id).set({ newLat: lat, newLon: lon, newAddr: formattedAddr }, { merge: true });
+    }
+
+    pt.x = lon;
+    pt.y = lat;
+    pt.addr = formattedAddr;
+
+    map.closePopup();
+    buildMarkers();
+    buildTerritories();
+  } catch (err) {
+    statusEl.textContent = 'Erro ao salvar. Verifique a configuração do Firebase.';
+    statusEl.style.color = '#c0392b';
+    btn.disabled = false;
+  }
+}
+
 async function movePatientAction(pt, newNurse) {
   if (!confirm('Mudar ' + pt.p + ' de ' + pt.n + ' para ' + newNurse + '?')) return;
   try {
@@ -548,7 +635,7 @@ async function deletePatientAction(pt) {
     if (pt.source === 'added') {
       await db.collection('patients_added').doc(pt.id).delete();
     } else {
-      await db.collection('static_overrides').doc(pt.id).set({ action: 'delete' }, { merge: true });
+      await db.collection('static_overrides').doc(pt.id).set({ deleted: true }, { merge: true });
     }
     const idx = PATIENTS.findIndex(p => p.id === pt.id);
     if (idx !== -1) PATIENTS.splice(idx, 1);
@@ -1135,10 +1222,17 @@ async function loadAddedPatients() {
       const d = doc.data();
       const target = PATIENTS.find(p => p.id === doc.id && p.source === 'static');
       if (!target) return;
-      if (d.action === 'delete') {
+      if (d.action === 'delete' || d.deleted === true) {
         toDelete.add(doc.id);
-      } else if (d.action === 'move' && d.newNurse) {
+        return;
+      }
+      if ((d.action === 'move' || d.newNurse) && d.newNurse) {
         target.n = d.newNurse;
+      }
+      if (d.newLat != null && d.newLon != null) {
+        target.y = d.newLat;
+        target.x = d.newLon;
+        if (d.newAddr) target.addr = d.newAddr;
       }
     });
     if (toDelete.size > 0) {
