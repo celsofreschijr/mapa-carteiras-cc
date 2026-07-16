@@ -896,6 +896,20 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+// Zonas urbanas aproximadas (raio em km a partir do centro de cada cidade atendida).
+// É uma aproximação por círculo, não o perímetro oficial da prefeitura — ajuste os raios
+// se algum bairro legítimo estiver caindo fora ou alguma área rural estiver passando.
+const URBAN_ZONES = [
+  { name: 'Londrina', lat: -23.3103, lon: -51.1628, radiusKm: 9.5 },
+  { name: 'Cambé', lat: -23.2780418, lon: -51.2810444, radiusKm: 4.5 },
+  { name: 'Ibiporã', lat: -23.2693412, lon: -51.048006, radiusKm: 3.5 },
+  { name: 'Jataizinho', lat: -23.2564532, lon: -50.9818265, radiusKm: 2.5 },
+];
+
+function isWithinUrbanZone(lat, lon) {
+  return URBAN_ZONES.some(z => haversineKm(z.lat, z.lon, lat, lon) <= z.radiusKm);
+}
+
 function currentCounts() {
   const counts = {};
   Object.keys(NURSE_HOMES).forEach(n => counts[n] = 0);
@@ -943,6 +957,17 @@ async function suggestNurse() {
 
     const lat = parseFloat(data[0].lat);
     const lon = parseFloat(data[0].lon);
+
+    if (!isWithinUrbanZone(lat, lon)) {
+      statusEl.innerHTML = '⚠ Endereço localizado fora do perímetro urbano atendido (Londrina, Cambé, Ibiporã ou Jataizinho).<br>' +
+        'Encontrado em: ' + data[0].display_name + '<br>' +
+        'Se o endereço estiver correto e for realmente uma área urbana válida, avise Celso para calibrar a zona.';
+      statusEl.style.color = '#c0392b';
+      resultsEl.innerHTML = '';
+      if (previewMarker) { map.removeLayer(previewMarker); previewMarker = null; }
+      return;
+    }
+
     lastSearch = { name, addr, bairro, cidade, lat, lon };
     statusEl.style.color = 'var(--text-muted)';
     statusEl.textContent = 'Endereço localizado: ' + data[0].display_name;
