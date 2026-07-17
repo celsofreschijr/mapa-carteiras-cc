@@ -180,6 +180,19 @@
         </label>
         <div id="nurseList"></div>
       </div>
+      <div class="section">
+        <h2>Zonas de captação</h2>
+        <p style="font-size:11px; color:var(--text-muted); margin:0 0 8px 0;">Destaca áreas dentro do perímetro urbano com poucos ou nenhum paciente cadastrado por perto — candidatas a concentrar captação.</p>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:8px; cursor:pointer;">
+          <input type="checkbox" id="coverageGapToggle" checked onchange="toggleCoverageGaps(this.checked)">
+          Mostrar zonas de baixa cobertura
+        </label>
+        <div style="display:flex; gap:10px; font-size:11px; margin-bottom:8px;">
+          <span style="display:flex; align-items:center; gap:4px;"><span style="width:10px;height:10px;background:#c0392b;opacity:0.5;display:inline-block;"></span> Sem pacientes</span>
+          <span style="display:flex; align-items:center; gap:4px;"><span style="width:10px;height:10px;background:#e67e22;opacity:0.5;display:inline-block;"></span> Baixa densidade</span>
+        </div>
+        <button onclick="buildCoverageGaps()" style="width:100%; padding:6px; font-size:12px; border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:6px; cursor:pointer;">Atualizar zonas</button>
+      </div>
       <div id="summary"></div>
     </div>
 
@@ -749,6 +762,66 @@ function toggleTerritories(show) {
   if (show) { territoryLayer.addTo(map); } else { map.removeLayer(territoryLayer); }
 }
 
+let coverageGapLayer = null;
+
+function buildCoverageGaps() {
+  if (coverageGapLayer) { map.removeLayer(coverageGapLayer); }
+  coverageGapLayer = L.layerGroup();
+
+  const CELL_KM = 1.2; // tamanho de cada célula da grade
+  const SEARCH_RADIUS_KM = CELL_KM * 0.75; // raio de busca de pacientes ao redor do centro da célula
+  const KM_PER_DEG_LAT = 111.0;
+
+  URBAN_ZONES.forEach(zone => {
+    const kmPerDegLon = 111.320 * Math.cos(zone.lat * Math.PI / 180);
+    const cellDegLat = CELL_KM / KM_PER_DEG_LAT;
+    const cellDegLon = CELL_KM / kmPerDegLon;
+    const radiusDegLat = zone.radiusKm / KM_PER_DEG_LAT;
+    const radiusDegLon = zone.radiusKm / kmPerDegLon;
+
+    const latStart = zone.lat - radiusDegLat;
+    const latEnd = zone.lat + radiusDegLat;
+    const lonStart = zone.lon - radiusDegLon;
+    const lonEnd = zone.lon + radiusDegLon;
+
+    for (let lat = latStart; lat <= latEnd; lat += cellDegLat) {
+      for (let lon = lonStart; lon <= lonEnd; lon += cellDegLon) {
+        const cLat = lat + cellDegLat / 2;
+        const cLon = lon + cellDegLon / 2;
+
+        // só considera células dentro do círculo urbano (evita marcar área rural como "oportunidade")
+        if (haversineKm(zone.lat, zone.lon, cLat, cLon) > zone.radiusKm) continue;
+
+        const nearbyCount = PATIENTS.filter(p => haversineKm(p.y, p.x, cLat, cLon) <= SEARCH_RADIUS_KM).length;
+
+        let color = null, label = '';
+        if (nearbyCount === 0) {
+          color = '#c0392b'; label = 'Nenhum paciente cadastrado nas proximidades';
+        } else if (nearbyCount <= 2) {
+          color = '#e67e22'; label = nearbyCount + ' paciente(s) próximo(s) — baixa densidade';
+        } else {
+          continue; // zona já coberta, não desenha
+        }
+
+        const bounds = [[lat, lon], [lat + cellDegLat, lon + cellDegLon]];
+        const rect = L.rectangle(bounds, {
+          stroke: false, fillColor: color, fillOpacity: 0.28, interactive: true
+        });
+        rect.bindTooltip(zone.name + ' — ' + label, { sticky: true });
+        coverageGapLayer.addLayer(rect);
+      }
+    }
+  });
+
+  const cb = document.getElementById('coverageGapToggle');
+  if (!cb || cb.checked) coverageGapLayer.addTo(map);
+}
+
+function toggleCoverageGaps(show) {
+  if (!coverageGapLayer) return;
+  if (show) { coverageGapLayer.addTo(map); } else { map.removeLayer(coverageGapLayer); }
+}
+
 function buildMarkers() {
 
   clusterGroup.clearLayers();
@@ -1256,6 +1329,7 @@ async function init() {
   buildNurseList();
   buildMarkers();
   buildTerritories();
+  buildCoverageGaps();
   populateReportNurseFilter();
 }
 init();
